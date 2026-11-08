@@ -56,7 +56,7 @@ def auth():
 def dashboard():
     user = session.get('user')
     # Hardcoded security: Only you can view this page
-    if not user or user.get('email') != 'ceo@the27links.in':
+    if not user or user.get('email') != 'support@the27links.in':
         return "Access Denied: Unauthorized Account", 403
         
     all_users = User.query.all()
