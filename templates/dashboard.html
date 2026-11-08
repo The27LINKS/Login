@@ -1,63 +1,36 @@
-import os
-from flask import Flask, redirect, url_for, session, render_template
-from flask_sqlalchemy import SQLAlchemy
-from authlib.integrations.flask_client import OAuth
-
-app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "super_secret_session_key")
-
-# Connects to Neon Postgres
-app.config['SQLALCHEMY_DATABASE_URI'] = os.environ.get('DATABASE_URL')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-
-oauth = OAuth(app)
-google = oauth.register(
-    name='google',
-    client_id=os.environ.get('GOOGLE_CLIENT_ID'),
-    client_secret=os.environ.get('GOOGLE_CLIENT_SECRET'),
-    server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
-    client_kwargs={'scope': 'openid email profile'}
-)
-
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    email = db.Column(db.String(120), unique=True, nullable=False)
-    name = db.Column(db.String(120))
-    picture = db.Column(db.String(255))
-
-with app.app_context():
-    db.create_all()
-
-@app.route('/ping')
-def ping():
-    return {"status": "awake"}, 200
-
-@app.route('/login')
-def login():
-    redirect_uri = url_for('auth', _external=True)
-    return google.authorize_redirect(redirect_uri)
-
-@app.route('/callback')
-def auth():
-    token = google.authorize_access_token()
-    user_info = token.get('userinfo')
-    
-    user = User.query.filter_by(email=user_info['email']).first()
-    if not user:
-        user = User(email=user_info['email'], name=user_info['name'], picture=user_info['picture'])
-        db.session.add(user)
-        db.session.commit()
-    
-    session['user'] = user_info
-    return redirect(url_for('dashboard'))
-
-@app.route('/dashboard')
-def dashboard():
-    user = session.get('user')
-    # Hardcoded security: Only you can view this page
-    if not user or user.get('email') != 'support@the27links.in':
-        return "Access Denied: Unauthorized Account", 403
-        
-    all_users = User.query.all()
-    return render_template('dashboard.html', users=all_users, admin=user)
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The27LINKS | Admin</title>
+    <style>
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0f172a; color: white; padding: 2rem; }
+        .container { max-width: 800px; margin: 0 auto; background: #1e293b; padding: 2rem; border-radius: 12px; }
+        table { width: 100%; border-collapse: collapse; margin-top: 1.5rem; }
+        th, td { padding: 12px; text-align: left; border-bottom: 1px solid #334155; }
+        th { background: #334155; }
+        img { border-radius: 50%; width: 36px; height: 36px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>System Users</h2>
+        <p>Authenticated as: {{ admin.email }}</p>
+        <table>
+            <tr>
+                <th>Profile</th>
+                <th>Name</th>
+                <th>Email Address</th>
+            </tr>
+            {% for u in users %}
+            <tr>
+                <td><img src="{{ u.picture }}" alt="User Picture"></td>
+                <td>{{ u.name }}</td>
+                <td>{{ u.email }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </div>
+</body>
+</html>
