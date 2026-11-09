@@ -1,9 +1,18 @@
+import hashlib
+import hmac
 import os
-from flask import Flask, redirect, url_for, session, render_template
+import secrets
+import time
+from urllib.parse import urlencode
+
+from flask import Flask, redirect, request, url_for, session, render_template
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 from authlib.integrations.flask_client import OAuth
+
+HANDOFF_DESTINATION = "https://the27links.in"
+HANDOFF_LIFETIME_SECONDS = 120
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "").strip()
@@ -45,6 +54,13 @@ class User(db.Model):
     email = db.Column(db.String(120), unique=True, nullable=False)
     name = db.Column(db.String(120))
     picture = db.Column(db.String(255))
+
+class LoginHandoff(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    code_hash = db.Column(db.String(64), unique=True, nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    expires_at = db.Column(db.Integer, nullable=False)
+    consumed_at = db.Column(db.Integer)
 
 with app.app_context():
     db.create_all()
@@ -96,7 +112,82 @@ def auth():
         raise
 
     session['user'] = user_info
+    if user.email.strip().casefold() != ADMIN_EMAIL:
+        handoff_code = secrets.token_urlsafe(32)
+        handoff = LoginHandoff(
+            code_hash=hashlib.sha256(handoff_code.encode('utf-8')).hexdigest(),
+            user_id=user.id,
+            expires_at=int(time.time()) + HANDOFF_LIFETIME_SECONDS,
+        )
+        try:
+            db.session.add(handoff)
+            db.session.commit()
+        except SQLAlchemyError:
+            db.session.rollback()
+            app.logger.exception("Failed to create a one-time login handoff.")
+            raise
+
+        destination = f"{HANDOFF_DESTINATION}?{urlencode({'login': 'success', 'code': handoff_code})}"
+        response = redirect(destination)
+        response.headers['Cache-Control'] = 'no-store'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        return response
+
     return redirect(url_for('dashboard'))
+
+@app.route('/auth/exchange', methods=['POST'])
+def exchange_login_handoff():
+    shared_secret = os.environ.get('HANDOFF_SHARED_SECRET', '').strip()
+    if not shared_secret:
+        app.logger.error("HANDOFF_SHARED_SECRET is not configured.")
+        return {"error": "login exchange is not configured"}, 503
+
+    supplied_secret = request.headers.get('X-Handoff-Secret', '')
+    if not hmac.compare_digest(supplied_secret, shared_secret):
+        return {"error": "unauthorized"}, 401
+
+    payload = request.get_json(silent=True)
+    code = payload.get('code') if isinstance(payload, dict) else None
+    if not isinstance(code, str) or not code or len(code) > 128:
+        return {"error": "a valid code is required"}, 400
+
+    code_hash = hashlib.sha256(code.encode('utf-8')).hexdigest()
+    now = int(time.time())
+    try:
+        handoff = LoginHandoff.query.filter(
+            LoginHandoff.code_hash == code_hash,
+            LoginHandoff.expires_at > now,
+            LoginHandoff.consumed_at.is_(None),
+        ).first()
+        if not handoff:
+            return {"error": "invalid or expired code"}, 401
+
+        user = db.session.get(User, handoff.user_id)
+        if not user:
+            app.logger.error("Login handoff references a missing user.")
+            return {"error": "invalid or expired code"}, 401
+
+        result = db.session.query(LoginHandoff).filter(
+            LoginHandoff.id == handoff.id,
+            LoginHandoff.expires_at > now,
+            LoginHandoff.consumed_at.is_(None),
+        ).update({LoginHandoff.consumed_at: now}, synchronize_session=False)
+        if result != 1:
+            db.session.rollback()
+            return {"error": "invalid or expired code"}, 401
+
+        db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Failed to exchange a one-time login handoff.")
+        raise
+
+    return {
+        "id": user.id,
+        "email": user.email,
+        "name": user.name,
+        "picture": user.picture,
+    }, 200
 
 @app.route('/dashboard')
 def dashboard():
