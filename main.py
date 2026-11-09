@@ -1,10 +1,14 @@
 import os
 from flask import Flask, redirect, url_for, session, render_template
 from flask_sqlalchemy import SQLAlchemy
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from authlib.integrations.flask_client import OAuth
 
 app = Flask(__name__)
-app.secret_key = os.environ.get("SECRET_KEY", "super_secret_session_key")
+app.secret_key = os.environ.get("SECRET_KEY", "").strip()
+if not app.secret_key:
+    raise RuntimeError("SECRET_KEY must be set to a strong, private value.")
 
 # Set DATABASE_URL to the Neon connection string provided by your project.
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
@@ -49,6 +53,16 @@ def index():
 def ping():
     return {"status": "awake"}, 200
 
+@app.route('/health')
+def health():
+    try:
+        with db.engine.connect() as connection:
+            connection.execute(text('SELECT 1'))
+    except SQLAlchemyError:
+        app.logger.exception("Neon database health check failed")
+        return {"status": "database unavailable"}, 503
+    return {"status": "ok"}, 200
+
 @app.route('/login')
 def login():
     redirect_uri = url_for('auth', _external=True)
@@ -58,13 +72,25 @@ def login():
 def auth():
     token = google.authorize_access_token()
     user_info = token.get('userinfo')
-    
-    user = User.query.filter_by(email=user_info['email']).first()
-    if not user:
-        user = User(email=user_info['email'], name=user_info['name'], picture=user_info['picture'])
-        db.session.add(user)
-        db.session.commit()
-    
+    if not isinstance(user_info, dict) or not user_info.get('email'):
+        app.logger.error("Google OAuth callback did not include a user email.")
+        return {"error": "Google did not return an account email."}, 400
+
+    try:
+        user = User.query.filter_by(email=user_info['email']).first()
+        if not user:
+            user = User(
+                email=user_info['email'],
+                name=user_info.get('name'),
+                picture=user_info.get('picture'),
+            )
+            db.session.add(user)
+            db.session.commit()
+    except SQLAlchemyError:
+        db.session.rollback()
+        app.logger.exception("Failed to load or save the authenticated user.")
+        raise
+
     session['user'] = user_info
     return redirect(url_for('dashboard'))
 
