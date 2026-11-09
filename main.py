@@ -10,6 +10,10 @@ app.secret_key = os.environ.get("SECRET_KEY", "").strip()
 if not app.secret_key:
     raise RuntimeError("SECRET_KEY must be set to a strong, private value.")
 
+ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "the27linksofficial@gmail.com").strip().casefold()
+if not ADMIN_EMAIL:
+    raise RuntimeError("ADMIN_EMAIL must be set to the Google account allowed to access the dashboard.")
+
 # Set DATABASE_URL to the Neon connection string provided by your project.
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
 if not DATABASE_URL:
@@ -97,8 +101,7 @@ def auth():
 @app.route('/dashboard')
 def dashboard():
     user = session.get('user')
-    # Hardcoded security: Only you can view this page
-    if not user or user.get('email') != 'the27linksofficial@gmail.com':
+    if not user or (user.get('email') or '').strip().casefold() != ADMIN_EMAIL:
         return "Access Denied: Unauthorized Account", 403
         
     all_users = User.query.all()
