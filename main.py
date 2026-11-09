@@ -6,8 +6,11 @@ from authlib.integrations.flask_client import OAuth
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "super_secret_session_key")
 
-# Neon PostgreSQL in production; SQLite for local development.
+# Set DATABASE_URL to the Neon connection string provided by your project.
 DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL must be set to your Neon PostgreSQL connection string.")
+
 if DATABASE_URL.startswith('postgresql://'):
     DATABASE_URL = DATABASE_URL.replace('postgresql://', 'postgresql+psycopg://', 1)
 elif DATABASE_URL.startswith('postgres://'):
@@ -15,8 +18,9 @@ elif DATABASE_URL.startswith('postgres://'):
 elif DATABASE_URL.startswith('postgresql+psycopg2://'):
     DATABASE_URL = DATABASE_URL.replace('postgresql+psycopg2://', 'postgresql+psycopg://', 1)
 
-app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL or 'sqlite:///local.db'
+app.config['SQLALCHEMY_DATABASE_URI'] = DATABASE_URL
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {'pool_pre_ping': True}
 db = SQLAlchemy(app)
 
 oauth = OAuth(app)
@@ -36,6 +40,10 @@ class User(db.Model):
 
 with app.app_context():
     db.create_all()
+
+@app.route('/')
+def index():
+    return redirect(url_for('login'))
 
 @app.route('/ping')
 def ping():
@@ -64,7 +72,7 @@ def auth():
 def dashboard():
     user = session.get('user')
     # Hardcoded security: Only you can view this page
-    if not user or user.get('email') != 'support@the27links.in':
+    if not user or user.get('email') != 'the27linksofficial@gmail.com':
         return "Access Denied: Unauthorized Account", 403
         
     all_users = User.query.all()
